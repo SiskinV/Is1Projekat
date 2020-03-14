@@ -1,0 +1,132 @@
+Opredelite se za neku aplikaciju, ja sam radio sa Java with ant Enterprise Client 
+jer sam zeleo da napravim JavaFX aplikaciju. Dakle, ovde cu da napisem sve cega se secam
+od problema koje sam ja imao.
+Naime, ako radite sa JFX, potrebno je da imate upaljen 1.8 JDK ili JRE ili sta ti ja znam
+da netbeans uzima.
+Potom, da biste radili sa onim jms-ovima, treba da uvezete javaee-api-8.0.jar. Sam od sebe, 
+netbeans apsolutno ne registruje kod mene taj .jar pa sam morao rucno.
+Dalje sto ne registruje jeste mysql connector koji smo dobili od Tubica. Skinite to i uvezite.
+Za parsiranje dobijenih podataka sa sajta, koristio sam json-simple-1.1.1.jar biblioteku, Skinite
+sa neta.
+To je sto se tice biblioteka svih.
+
+Da se ogradim za sad, ovo sto sam implementirao radi sa default vrednostima koje nam salju sa servera,
+ne mogu da garantujem da ovo radi 100%, ali za datu situaciju radi.
+
+Ideja je sledeca:
+
+Mi imamo nasu aplikaciju koju cemo u daljem tekstu da zovemo Korisnik, imamo aplikaciju (isto 
+Java w/ Ant Enterprise Client) koju zovemo Servis i imamo jednu Maven Web Aplikaciju koju
+zovemo Tajmer (ali do toga jos ima..)
+
+Korisnik ima GUI. Njegov zadatak je da dodje i da ukuca parametre u taj gui i da stisne dugme
+posalji da se posalje "na server". Ovde je ideja da mi ne saljemo odmah direktno na server
+vec da imamo lokalnu bazu podataka koja ima jednu tabelu, a ona se MORA zvati DocumentRequest.
+Posto je definisano u zadatku da mora da se koristi JPA, koriscenje cemo da napravimo tako sto
+u MySQL browseru ili kako god se to djubre zove napravimo novi database i unutar njega
+stavimo jednu tabelu koja se zove DocumentRequest. Kada smo to uradili, pravimo na glassfish-u
+komunikaciju sa bazom (Lab 3, imate video ovde na discordu kako se to radi, odgledajte).
+Napravili smo bazu, komunikaciju preko JDBC sve kul i super. Sada treba da napravimo entity
+klasu. Prvo treba da napravimo perzistentnu jedinicu (takodje se nadam da znate da napravite)
+i ostvarite konekciju sa DB koju ste napravili. Vazna napomena - ja u svom projektu nikako nisam 
+mogao da radim sa JTA perzistentnom jedinicom, morao sam da radim sa RESOURCE_LOCAL, ostavite i 
+vi tako. Sada napravite Entity -> desni klik na paket Create entity from database ili kako se zove
+i toeto. Sad se vratite u perzistentnu jedinicu i dodajte ispod provider <class>paket.ImeEntiteta</class>
+Ovo morate da napravite da bi vasa app znala na sta da gadja entitete. 
+Sad imamo glavnu postavku za prvi korak.
+Vi ste sad klikom na dugme zavrsili unos podataka koji su potrebni i odradili sve provere i sad
+zelite da sacuvate u LOKALNU bazu to sto ste napravili. Obavezno stavite status kreiranog dokumenta na kreiran
+To morate da uradite preko sledeece sekvence
+koraka:
+    em.getTransaction().begin();
+    em.persist(vas novi entity ide ovde);
+    em.flush();
+    em.getTransaction().commit();
+Entity manager NE MOZEMO da dobijemo kao na labu preko anotacije @PersistanceContext, moracemo rucno 
+da napravimo. To uradite tako sto cete za vasu glavnu klasu da stavite polje koje je tipa EntityManager em;
+a u konstruktoru ili u nekoj inicijalizacionoj metodi treba da napravite EntityManagerFactory emf = Persistance.create...();
+em = emf.createEntityManager();.
+Iz nekog razloga sa anotacijom dobija null neki i tumor.
+Super, ako ste ovo ispratili, trebalo bi da ste sacuvali u bazi entitet. E sad - JMS. To radimo na dva nacina, Opredelite
+se za jedan:
+    1. Saljemo object poruke na neki queue preko jms pre nego sto sacuvamo u bazu. Dakle, imacete u Korisniku Producera
+        koji salje objekte na zajednicki queue da bi onda Servis mogao da obradi (o tome reci malo kasnije)
+    2. Saljemo notifikaciju na topic i gadjamo DurableConsumer gde on vidi koje ID su novi ubaceni u bazu i onda Servis 
+        moze da vidi koga treba da obradi.
+Ja bih vam najtoplije preporucio da saljete object poruke jer je to tacnije od stavke 2. Necu da opisujem razloge
+ovde, verujte mi samo na rec haha.
+
+Treba napraviti proveru sa Terminima. Tu saljemo URL parametre, nista ne saljemo u body. Pogledajte dokumentaciju
+za HttpURLConnection (ili kucajte u google how to send get using HttpURLConnection...). URL parametri
+vam pisu u YAML fajlu kako se zovu, pogledajte i tamo kada budete pravili novi URL objekat, url string
+na kraju treba da dobije ?param1=...&param2=...
+Ove url putanje dobijate iz YAML fajla - root url je na pocetku server: pa url: tako nesto, a rest api-ji su 
+definisani po odeljcima kao /TerminServer/Nesto... pa ispod pise sta radi
+Kao response, dobijate JSON, tu iskoristite json-simple bibloteku. Vas kod treba ovako nekako da izgleda:
+            ...
+            JSONParser parse = new JSONParser();
+            ...
+            BufferedReader input = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+            JSONArray jArray = (JSONArray) parse.parse(input);
+            input.close();
+            ...
+
+(Mala napomena: Ovaj HttpURLConnection Vuk kaze da je nesiguran i depricated - to za nase potrebe
+nije toliko bitno s obzirom da je ideja samo da radi, a ne da bude enterprise level security)
+
+Okej, sada imate proveru termina, imate cuvanje u bazu i to je to za sad od Korisnika. 
+Sad da objasnim sta Servis radi.
+Ideja servisa je da je on neki JMS Consumer koji ceka objektne poruke i salje ih na Perso.
+Servis mora da se konfigurise sa perzistentnom jedinicom isto kao sto se konfigurisao
+korisnik. Treba da izgenerisemo entity klasu iz baze posredstvom JPA. Konfigurisite projekat
+isto kao i Korisnika sto ste konfigurisali. On treba da uzme objektnu poruku, da azurira 
+status dokumenta na uProdukciji sledecom sekvencom tek nakon uspesnog slanja na Perso:
+    em.getTransaction().begin();
+    em.merge(azuriran dokument);
+    em.flush();
+    em.getTransaction().commit();
+Ukoliko je bio neki error na perso centru, mora obavezno da vrati objektnu poruku u jms queue
+ili negde da je sacuva i obradi ponovo - NE SMEMO DA GUBIMO KORISNIKE!
+Slanje objekata pogledajte na netu, ja sam koristio ObjectOutputStream, nadam se da ce to
+da radi, ne mogu da znam bez servisa da su online. Tu morate da proverite
+response code od servera jer zelimo da znamo da li smo uspesno sve odradili ili ne(vracamo u red).
+Konstrukcija slanja obj je maltene ista kao i slanja zahteva samo sto sad stavite
+setRequestMethod na POST!
+To je sve sto se tice servisa
+
+Da se vratimo nazad na Korisnika i da pogledamo njegovu proveru stanja dokumenata.
+Tu se provera radi isto kao i svaki GET zahtev, samo stavite jos ovu liniju
+koda ispod setRequestMethod:
+    connection.setRequestProperty("User-Agent", HttpHeaders.USER_AGENT);
+Dobicete JSON response koji treba da parsirate kao i sve do sada sa json-om.
+Treba da napravite proveru stanja i da li je pristigao ID dokumenta dobar.
+Ja sam skapirao iz teksta da oni nama treba da vrate status cekaIzrucenje (po yaml)
+odnosno cekaUrucenje (po tekstu). Ukoliko dobijemo taj status, a ne dobijemo
+status uIzradi ili sta vec, mi treba da azuriramo u nasoj bazi
+taj objekat za koji smo hteli da vidimo stanje. Azuriranje se radi po em.merge sekvenci
+
+Klikom na dugme uruci treba da se lokalna baza azurira u status dokumenta urucen. Moje
+misljenje je da treba i perso centar da se azurira, ali to nije definisano. Do sada
+sam vec opisao kako se azuriranje radi.
+
+E sad, tajmer - imate prilozen projekat kako bi to trebalo da radi. U principu,
+napravite stateless klasu u Tajmeru (dakle maven web app) u paketu koji se zove 
+nesto kao co.mycompany.IMEPROJEKTA.resources. Prilagodite prilozen kod
+vasem projektu. Tajmer radi tako sto periodicno salje jms 
+message na neki topic (TimerTopic npr da se zove).
+@Schedule notacija prima one parametre, ako zelite za tipa 10 sekundi da salje
+novi message stavicete u delu gde su seconds: seconds = "*/10", za pet
+stavljate seconds = "*/5" itd. Nadam se da kapirate ovaj kod za tajmer, nista
+specijalno.
+
+Vracamo se na korisnika - napravite u vasem programu nit koja je kao neki TimerListener
+i koji je zapravo consumer povezan na TimerTopic. Consumer ne treba da bude DurableConsumer
+jer nas ne interesuje istorija, samo buducnost. Kada Consumer dobije notifikaciju od jmsa
+da je stigla neka poruka, on onda poziva metodu Korisnika koja azurira stanje dokumenta
+(ono azuriranje kliknes dukme osvezi pa on ponovo salje isti zahtev kao kada kliknes dugme
+proveri zahtev - ako vam nije jasno o cemu pricam, procitajte tekst zadatka)
+
+U sustini, to bi ovako trebalo da radi. Ako budete imali nekih konfiguracionih problema,
+guglujte, ne znam ja sve napamet kako sam resio hahah
+
+Srecno!
